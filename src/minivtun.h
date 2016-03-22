@@ -8,6 +8,29 @@
 #define __MINIVTUN_H
 
 #include "library.h"
+#ifdef ANDROID
+# include <jni.h>
+# include <android/log.h>
+
+#define TAG "minivtun"
+#define __QUOTE(x)              # x
+#define  _QUOTE(x)              __QUOTE(x)
+
+#define LOG(prio, fmt, ...)                                                \
+        ((void)__android_log_print(prio, TAG, \
+                                           __FILE__ ":[" _QUOTE(__LINE__) "]\t" fmt, ## __VA_ARGS__))
+
+#define LOGD(...) LOG(ANDROID_LOG_DEBUG, __VA_ARGS__)
+#define LOGI(...) LOG(ANDROID_LOG_INFO, __VA_ARGS__)
+#define LOGW(...) LOG(ANDROID_LOG_WARN, __VA_ARGS__)
+#define LOGE(...) LOG(ANDROID_LOG_ERROR, __VA_ARGS__)
+#else
+#define LOGD(...) fprintf(stdout, __VA_ARGS__)
+#define LOGI(...) fprintf(stdout, __VA_ARGS__)
+#define LOGW(...) fprintf(stdout, __VA_ARGS__)
+#define LOGE(...) fprintf(stderr, __VA_ARGS__)
+
+#endif
 
 extern struct minivtun_config config;
 
@@ -58,7 +81,7 @@ struct minivtun_msg {
 #define MINIVTUN_MSG_BASIC_HLEN  (sizeof(((struct minivtun_msg *)0)->hdr))
 #define MINIVTUN_MSG_IPDATA_OFFSET  (offsetof(struct minivtun_msg, ipdata.data))
 
-#define enabled_encryption()  (config.crypto_passwd[0])
+#define enabled_encryption()  (config.crypto_passwd && config.crypto_passwd[0])
 
 static inline void local_to_netmsg(void *in, void **out, size_t *dlen)
 {
@@ -77,7 +100,11 @@ static inline void netmsg_to_local(void *in, void **out, size_t *dlen)
 	}
 }
 
+#ifdef ANDROID
+//int run_client(int tunfd, int sockfd);
+#else
 int run_client(int tunfd, const char *peer_addr_pair);
+#endif
 int run_server(int tunfd, const char *loc_addr_pair);
 int vt_route_add(struct in_addr *network, unsigned prefix, struct in_addr *gateway);
 

@@ -22,6 +22,51 @@
 
 static time_t last_recv = 0, last_keepalive = 0, current_ts = 0;
 
+void hexdump(const void *p, int len)
+{
+    const unsigned char *line;
+    int i;
+    int thisline;
+    int offset;
+
+    line = (const unsigned char *)p;
+    offset = 0;
+
+    while (offset < len)
+    {
+        char buffer[1024] = {};
+        char *to_write = buffer;
+
+        to_write += sprintf(to_write, "%04x ", offset);
+        thisline = len - offset;
+
+        if (thisline > 16)
+        {
+            thisline = 16;
+        }
+
+        for (i = 0; i < thisline; i++)
+        {
+            to_write += sprintf(to_write, "%02x ", line[i]);
+        }
+
+        for (; i < 16; i++)
+        {
+            to_write += sprintf(to_write, "   ");
+        }
+
+        for (i = 0; i < thisline; i++)
+        {
+            to_write += sprintf(to_write, "%c", (line[i] >= 0x20 && line[i] < 0x7f) ? line[i] : '.');
+        }
+
+        to_write += sprintf(to_write, "\n");
+        LOGE("%s", buffer);
+        offset += thisline;
+        line += thisline;
+    }
+}
+
 static int network_receiving(int tunfd, int sockfd)
 {
 	char read_buffer[NM_PI_BUFFER_SIZE], crypt_buffer[NM_PI_BUFFER_SIZE];
@@ -67,7 +112,7 @@ static int network_receiving(int tunfd, int sockfd)
 			if (out_dlen < MINIVTUN_MSG_IPDATA_OFFSET + 40)
 				return 0;
 		} else {
-			fprintf(stderr, "*** Invalid protocol: 0x%x.\n", ntohs(nmsg->ipdata.proto));
+			LOGE("*** Invalid protocol: 0x%x.\n", ntohs(nmsg->ipdata.proto));
 			return 0;
 		}
 
@@ -76,6 +121,10 @@ static int network_receiving(int tunfd, int sockfd)
 		if (out_dlen - MINIVTUN_MSG_IPDATA_OFFSET < ip_dlen)
 			return 0;
 
+#ifdef ANDROID
+        LOGI("write to tunnel");
+		rc = write(tunfd, (char *)nmsg + MINIVTUN_MSG_IPDATA_OFFSET, ip_dlen);
+#else
 		pi.flags = 0;
 		pi.proto = nmsg->ipdata.proto;
 		osx_ether_to_af(&pi.proto);
@@ -84,6 +133,7 @@ static int network_receiving(int tunfd, int sockfd)
 		iov[1].iov_base = (char *)nmsg + MINIVTUN_MSG_IPDATA_OFFSET;
 		iov[1].iov_len = ip_dlen;
 		rc = writev(tunfd, iov, 2);
+#endif
 		break;
 	}
 
@@ -99,6 +149,11 @@ static int tunnel_receiving(int tunfd, int sockfd)
 	size_t ip_dlen, out_dlen;
 	int rc;
 
+#ifdef ANDROID
+	rc = read(tunfd, pi + 1, NM_PI_BUFFER_SIZE);
+	pi->proto = htons(ETH_P_IP); // TODO: extract version from ip hdr
+	ip_dlen = (size_t)rc;
+#else
 	rc = read(tunfd, pi, NM_PI_BUFFER_SIZE);
 	if (rc < sizeof(struct tun_pi))
 		return 0;
@@ -106,6 +161,7 @@ static int tunnel_receiving(int tunfd, int sockfd)
 	osx_af_to_ether(&pi->proto);
 
 	ip_dlen = (size_t)rc - sizeof(struct tun_pi);
+#endif
 
 	/* We only accept IPv4 or IPv6 frames. */
 	if (pi->proto == htons(ETH_P_IP)) {
@@ -115,7 +171,7 @@ static int tunnel_receiving(int tunfd, int sockfd)
 		if (ip_dlen < 40)
 			return 0;
 	} else {
-		fprintf(stderr, "*** Invalid protocol: 0x%x.\n", ntohs(pi->proto));
+		LOGE("*** Invalid protocol: 0x%x.\n", ntohs(pi->proto));
 		return 0;
 	}
 
@@ -179,7 +235,7 @@ static int try_resolve_and_connect(const char *peer_addr_pair,
 		return rc;
 
 	if ((sockfd = socket(peer_addr->sa.sa_family, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
-		fprintf(stderr, "*** socket() failed: %s.\n", strerror(errno));
+		LOGE("*** socket() failed: %s.\n", strerror(errno));
 		return -1;
 	}
 	if (connect(sockfd, (struct sockaddr *)peer_addr, sizeof_sockaddr(peer_addr)) < 0) {
@@ -191,6 +247,23 @@ static int try_resolve_and_connect(const char *peer_addr_pair,
 	return sockfd;
 }
 
+#ifdef ANDROID
+int quit = 0;
+/* groovish.groovyandroid */
+void Java_groovish_groovyandroid_Minivtun_stopClient(JNIEnv *env, jobject thiz)
+{
+    quit = 1;
+}
+
+int Java_groovish_groovyandroid_Minivtun_runClient(JNIEnv *env, jobject thiz, int tunfd, int sockfd)
+{
+	struct timeval timeo;
+	int rc;
+	fd_set rset;
+
+    last_recv = time(NULL);
+    quit = 0;
+#else
 int run_client(int tunfd, const char *peer_addr_pair)
 {
 	struct timeval timeo;
@@ -213,10 +286,10 @@ int run_client(int tunfd, const char *peer_addr_pair)
 		printf("WARNING: Connection to '%s' temporarily unavailable, "
 			   "to be tried later.\n", peer_addr_pair);
 	} else if (sockfd == -EINVAL) {
-		fprintf(stderr, "*** Invalid address pair '%s'.\n", peer_addr_pair);
+		LOGE("*** Invalid address pair '%s'.\n", peer_addr_pair);
 		return -1;
 	} else {
-		fprintf(stderr, "*** Unable to connect to '%s'.\n", peer_addr_pair);
+		LOGE("*** Unable to connect to '%s'.\n", peer_addr_pair);
 		return -1;
 	}
 
@@ -231,11 +304,12 @@ int run_client(int tunfd, const char *peer_addr_pair)
 			fclose(fp);
 		}
 	}
+#endif
 
 	/* For triggering the first keep-alive packet to be sent. */
 	last_keepalive = 0;
 
-	for (;;) {
+	for (; !quit; ) {
 		FD_ZERO(&rset);
 		FD_SET(tunfd, &rset);
 		if (sockfd >= 0)
@@ -246,7 +320,7 @@ int run_client(int tunfd, const char *peer_addr_pair)
 
 		rc = select((tunfd > sockfd ? tunfd : sockfd) + 1, &rset, NULL, NULL, &timeo);
 		if (rc < 0) {
-			fprintf(stderr, "*** select(): %s.\n", strerror(errno));
+			LOGE("*** select(): %s.\n", strerror(errno));
 			return -1;
 		}
 
@@ -264,12 +338,16 @@ int run_client(int tunfd, const char *peer_addr_pair)
 
 		/* Connection timed out, try reconnecting. */
 		if (current_ts - last_recv > config.reconnect_timeo) {
+#ifdef ANDROID
+			LOGE("recv keepalive timeout.\n");
+            return -1;
+#else
 			/* Reopen the socket for a different local port. */
 			if (sockfd >= 0)
 				close(sockfd);
 			do {
 				if ((sockfd = try_resolve_and_connect(peer_addr_pair, &peer_addr)) < 0) {
-					fprintf(stderr, "Unable to connect to '%s', retrying.\n", peer_addr_pair);
+					LOGE("Unable to connect to '%s', retrying.\n", peer_addr_pair);
 					sleep(5);
 				}
 			} while (sockfd < 0);
@@ -281,6 +359,7 @@ int run_client(int tunfd, const char *peer_addr_pair)
 					  sizeof(s_peer_addr));
 			printf("Reconnected to %s:%u.\n", s_peer_addr, ntohs(port_of_sockaddr(&peer_addr)));
 			continue;
+#endif
 		}
 
 		/* No result from select(), do nothing. */
@@ -295,6 +374,10 @@ int run_client(int tunfd, const char *peer_addr_pair)
 			rc = tunnel_receiving(tunfd, sockfd);
 		}
 	}
+
+#ifndef ANDROID
+    close(sockfd);
+#endif
 
 	return 0;
 }

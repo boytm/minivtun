@@ -32,6 +32,8 @@ struct minivtun_config config = {
 	.wait_dns = false,
 };
 
+#ifndef ANDROID
+
 static struct option long_opts[] = {
 	{ "local", required_argument, 0, 'l', },
 	{ "remote", required_argument, 0, 'r', },
@@ -354,4 +356,41 @@ int main(int argc, char *argv[])
 
 	return 0;
 }
+#else
+#include <jni.h>
+#include <android/log.h>
+void Java_groovish_groovyandroid_Minivtun_configClient(JNIEnv *env, jobject thiz, jstring jcrypto_passwd, jstring jcrypto_type, jstring jvaddr, jint keepalive_timeo, jint reconnect_timeo)
+{
+    const char *crypto_passwd = (*env)->GetStringUTFChars(env, jcrypto_passwd, NULL);
+    const char *crypto_type = (*env)->GetStringUTFChars(env, jcrypto_type, NULL);
+    const char *vaddr = (*env)->GetStringUTFChars(env, jvaddr, NULL);
+
+    config.crypto_passwd = strdup(crypto_passwd);
+	if (enabled_encryption()) {
+		fill_with_string_md5sum(config.crypto_passwd, config.crypto_key, CRYPTO_MAX_KEY_SIZE);
+		if ((config.crypto_type = get_crypto_type(crypto_type)) == NULL) {
+			fprintf(stderr, "*** No such encryption type defined: %s.\n", crypto_type);
+			exit(1);
+		}
+	} else {
+		memset(config.crypto_key, 0x0, CRYPTO_MAX_KEY_SIZE);
+		fprintf(stderr, "*** WARNING: Transmission will not be encrypted.\n");
+	}
+
+    inet_pton(AF_INET, vaddr, &config.local_tun_in);
+
+    (*env)->ReleaseStringUTFChars(env, jcrypto_passwd, crypto_passwd);
+    (*env)->ReleaseStringUTFChars(env, jcrypto_type, crypto_type);
+    (*env)->ReleaseStringUTFChars(env, jvaddr, vaddr);
+}
+
+jint JNI_OnLoad(JavaVM *vm, void *reserved) 
+{
+#ifndef NDEBUG
+    __android_log_write(ANDROID_LOG_DEBUG, "minivtun", "Loading minivtun native library $id$ compiled on "   __DATE__ " " __TIME__ );
+#endif
+    return JNI_VERSION_1_2;
+}
+
+#endif
 
